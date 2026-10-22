@@ -55,6 +55,14 @@ Assets/
 
 C# / .NET Framework 4.x / WinForms，用 `csc` 直接编译，界面代码集中在单个 `Form1.cs`。
 
+## 免责声明
+
+本项目中的图片、文字等素材来自网络或作者自用，仅供个人学习与交流，版权归原作者所有。
+
+若相关素材侵犯了您的权益，请通过 [GitHub Issues](https://github.com/xinm43473-stack/offering-wish-machine/issues) 联系我，核实后会立即删除。
+
+本项目按「现状」提供，不附带任何担保，使用本软件产生的后果由使用者自行承担。
+
 ---
 
 # Offering Wish Machine
@@ -111,3 +119,11 @@ Runs UI, feature (speed, floating text, hotkeys, persistence, layout) and langua
 ## Tech
 
 C# / .NET Framework 4.x / WinForms, compiled directly with `csc`; the whole UI lives in a single `Form1.cs`.
+
+## Disclaimer
+
+Images and texts in this project come from the internet or the author's own use, and are provided for learning and personal use only. All rights belong to their original owners.
+
+If any material infringes your rights, please reach me via [GitHub Issues](https://github.com/xinm43473-stack/offering-wish-machine/issues). It will be removed promptly after verification.
+
+This project is provided "as is", without warranty of any kind, express or implied.
