@@ -1,6 +1,6 @@
 # 上贡许愿机
 
-一个 Windows 桌面小工具：选中受供者，点「上贡」，屏幕上飘出功德文字。
+一个 Windows 桌面小工具：选中受供者，点「上贡」，屏幕上飘出Assets/Deities/受贡者名/1.txt或2.txt内文字。
 
 ## 功能
 
@@ -67,7 +67,7 @@ C# / .NET Framework 4.x / WinForms，用 `csc` 直接编译，界面代码集中
 
 # Offering Wish Machine
 
-A small Windows desktop widget: pick a deity, hit "Offer", and merit text floats up the screen.
+A small Windows desktop widget: pick a deity, hit "Offer", and Assets/Deities/receiver of tribute/1.txt or2.txt text floats up the screen.
 
 ## Features
 
