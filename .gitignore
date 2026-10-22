@@ -9,3 +9,6 @@ Assets/.initpack
 
 # 每个受供者的心愿是使用者自己写的内容：不进版本库，也不进初始素材包
 Assets/Deities/**/*.wish
+
+# 打包好的发行压缩包
+*.zip
