@@ -19,6 +19,28 @@ static class FeatureTest
         Console.WriteLine((ok ? "PASS  " : "FAIL  ") + name + "  " + detail);
     }
 
+    static bool IsImageExt(string path)
+    {
+        string e = Path.GetExtension(path).ToLowerInvariant();
+        return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".bmp" || e == ".gif";
+    }
+
+    static string[] GetImageFiles(string dir)
+    {
+        if (!Directory.Exists(dir)) return new string[0];
+        var list = new List<string>();
+        foreach (string f in Directory.GetFiles(dir))
+            if (IsImageExt(f)) list.Add(f);
+        return list.ToArray();
+    }
+
+    static string FileNames(string[] files)
+    {
+        var parts = new List<string>();
+        foreach (string f in files) parts.Add(Path.GetFileName(f));
+        return string.Join(",", parts.ToArray());
+    }
+
     static object Get(Form1 f, string field)
     {
         return typeof(Form1).GetField(field, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
@@ -359,6 +381,63 @@ static class FeatureTest
             Check("重启后心愿还在", wishReload == "我要中彩票", "'" + wishReload + "'");
             Check("重启后头衔还在", titleReload == "财神爷", "'" + titleReload + "'");
             formW.Dispose();
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("--- 右键更换背景图片 ---");
+        {
+            string bgDir = Path.Combine(appDir, "Assets", "background");
+            string src1 = Path.Combine(appDir, "_bg_src1.png");
+            string src2 = Path.Combine(appDir, "_bg_src2.png");
+            Form1.QuietBackgroundErrors = true;
+
+            using (var bmp = new System.Drawing.Bitmap(80, 50))
+            using (var g = System.Drawing.Graphics.FromImage(bmp))
+            {
+                g.Clear(System.Drawing.Color.DarkRed);
+                bmp.Save(src1, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            using (var bmp = new System.Drawing.Bitmap(120, 70))
+            using (var g = System.Drawing.Graphics.FromImage(bmp))
+            {
+                g.Clear(System.Drawing.Color.DarkBlue);
+                bmp.Save(src2, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            bool ok1 = form.SetBackgroundFromFile(src1);
+            Application.DoEvents();
+            string[] files1 = GetImageFiles(bgDir);
+            Check("换背景返回成功", ok1,
+                "err=" + (Form1.LastBackgroundError ?? "(无)") + " src存在=" + File.Exists(src1) +
+                " 大小=" + (File.Exists(src1) ? new FileInfo(src1).Length.ToString() : "0"));
+            Check("背景目录只剩一张图", files1.Length == 1, "共 " + files1.Length + " 个: " + FileNames(files1));
+            Check("背景文件名为 background.png", files1.Length == 1 && Path.GetFileName(files1[0]) == "background.png", FileNames(files1));
+            Check("窗体背景换成新图", form.BackgroundImage != null && form.BackgroundImage.Width == 80 && form.BackgroundImage.Height == 50,
+                form.BackgroundImage == null ? "(null)" : form.BackgroundImage.Width + "x" + form.BackgroundImage.Height);
+
+            bool ok2 = form.SetBackgroundFromFile(src2);
+            Application.DoEvents();
+            string[] files2 = GetImageFiles(bgDir);
+            Check("第二次换背景仍然只剩一张", ok2 && files2.Length == 1, "共 " + files2.Length + " 个: " + FileNames(files2));
+            Check("第二次换背景生效", form.BackgroundImage != null && form.BackgroundImage.Width == 120 && form.BackgroundImage.Height == 70,
+                form.BackgroundImage == null ? "(null)" : form.BackgroundImage.Width + "x" + form.BackgroundImage.Height);
+
+            // 选了不存在的文件：应拒绝，且不破坏当前背景
+            bool okBad = form.SetBackgroundFromFile(Path.Combine(appDir, "_not_exists.png"));
+            string[] files3 = GetImageFiles(bgDir);
+            Check("无效路径被拒绝", !okBad && files3.Length == 1 && form.BackgroundImage != null,
+                "ok=" + okBad + " 共 " + files3.Length + " 个");
+
+            // 删掉背景图后重载：回白底
+            foreach (string f in Directory.GetFiles(bgDir)) File.Delete(f);
+            Call(form, "LoadBackground");
+            Application.DoEvents();
+            Check("没有背景图时回白底", form.BackgroundImage == null && form.BackColor == System.Drawing.Color.White,
+                "bg=" + (form.BackgroundImage == null ? "null" : "有") + " color=" + form.BackColor);
+
+            File.Delete(src1);
+            File.Delete(src2);
+            Form1.QuietBackgroundErrors = false;
         }
 
         Console.WriteLine();

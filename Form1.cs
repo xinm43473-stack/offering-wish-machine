@@ -786,10 +786,11 @@ namespace CyberWishMachine
                 {
                     var bgFiles = Directory.GetFiles(_backgroundFolder)
                         .Where(f => ImageExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                        .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                         .ToArray();
                     if (bgFiles.Length > 0)
                     {
-                        this.BackgroundImage = LoadImageUnlocked(bgFiles[0]);
+                        SetBackgroundImage(LoadImageUnlocked(bgFiles[0]));
                         this.BackgroundImageLayout = ImageLayout.Stretch;
                         return;
                     }
@@ -799,7 +800,120 @@ namespace CyberWishMachine
 
             // Default: white background
             this.BackColor = Color.White;
-            this.BackgroundImage = null;
+            SetBackgroundImage(null);
+        }
+
+        // 换背景时释放旧图，避免 GDI 句柄越积越多
+        private void SetBackgroundImage(Image image)
+        {
+            Image old = this.BackgroundImage;
+            this.BackgroundImage = image;
+            if (old != null && !ReferenceEquals(old, image))
+            {
+                try { old.Dispose(); } catch { }
+            }
+        }
+
+        // ================================================================
+        //  Background menu - 壁纸右键更换背景
+        // ================================================================
+
+        private ContextMenuStrip BuildBackgroundMenu()
+        {
+            var menu = new ContextMenuStrip();
+            var item = new ToolStripMenuItem(T("更换背景图片…", "Change background image…"));
+            item.Click += (s, e) => PromptChangeBackground();
+            menu.Items.Add(item);
+            return menu;
+        }
+
+        private void PromptChangeBackground()
+        {
+            using (var dlg = new OpenFileDialog())
+            {
+                dlg.Filter = T("图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif", "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif");
+                dlg.Title = T("选择背景图片", "Select background image");
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                SetBackgroundFromFile(dlg.FileName);
+            }
+        }
+
+        // 把选中的图片复制进 Assets\background\ 并立即生效（旧背景图会被替换掉）
+        // 最近一次失败的原因，供自检脚本判断（界面上面向用户的仍是弹窗提示）
+        internal static string LastBackgroundError;
+        // 自检脚本里置 true，失败时只记录不弹窗（否则无人值守会卡在模态对话框上）
+        private static bool _quietBackgroundErrors;
+        internal static bool QuietBackgroundErrors
+        {
+            get { return _quietBackgroundErrors; }
+            set { _quietBackgroundErrors = value; }
+        }
+
+        internal bool SetBackgroundFromFile(string sourceFile)
+        {
+            LastBackgroundError = null;
+            try
+            {
+                if (string.IsNullOrEmpty(sourceFile)) { LastBackgroundError = "路径为空"; return false; }
+                if (!File.Exists(sourceFile)) { LastBackgroundError = "文件不存在: " + sourceFile; return false; }
+
+                string ext = Path.GetExtension(sourceFile);
+                if (string.IsNullOrEmpty(ext)) ext = ".png";
+                ext = ext.ToLowerInvariant();
+                if (!ImageExts.Contains(ext)) { LastBackgroundError = "不支持的扩展名: " + ext; return false; }
+
+                // 先确认这张图真的能解码，别把背景换成坏文件
+                Image probe = LoadImageUnlocked(sourceFile);
+                if (probe == null) { LastBackgroundError = "图片无法解码"; return false; }
+                probe.Dispose();
+
+                Directory.CreateDirectory(_backgroundFolder);
+
+                string dest = Path.Combine(_backgroundFolder, "background" + ext);
+                string tmp = dest + ".tmp";
+                File.Copy(sourceFile, tmp, true);
+
+                // 目录里只留这一张，否则按文件名排序时别的图可能排在前面顶掉它
+                foreach (string f in Directory.GetFiles(_backgroundFolder))
+                {
+                    // 本次刚写出的临时文件与目标文件都要留着
+                    if (string.Equals(f, tmp, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.Equals(f, dest, StringComparison.OrdinalIgnoreCase)) continue;
+
+                    string name = Path.GetFileName(f);
+                    if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { File.Delete(f); } catch { }
+                        continue;
+                    }
+                    if (!ImageExts.Contains(Path.GetExtension(f).ToLowerInvariant())) continue;
+                    try { File.Delete(f); } catch { }
+                }
+                if (File.Exists(dest)) File.Delete(dest);
+                File.Move(tmp, dest);
+
+                LoadBackground();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LastBackgroundError = ex.ToString();
+                if (!QuietBackgroundErrors)
+                {
+                    MessageBox.Show(
+                        string.Format(T("更换背景失败：{0}", "Failed to change background: {0}"), ex.Message),
+                        T("错误", "Error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                return false;
+            }
+        }
+
+        // 在壁纸（窗体空白处）右键才弹菜单；子控件会自己吃掉鼠标事件，所以不会误弹
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Right) return;
+            BuildBackgroundMenu().Show(this, e.Location);
         }
 
         // ================================================================
