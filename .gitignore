@@ -12,3 +12,6 @@ Assets/Deities/**/*.wish
 
 # 打包好的发行压缩包
 *.zip
+
+# 换背景时留底的旧背景图（本地留存，不进版本库）
+Assets/OldBackground/

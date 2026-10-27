@@ -38,6 +38,8 @@ namespace CyberWishMachine
         private readonly string _offeringsFolder;
 
         private readonly string _backgroundFolder;
+        // 换下来的旧背景图挪到这里留底，不做删除
+        private readonly string _oldBackgroundFolder;
 
         // 上贡日志
         private readonly string _logFolder;
@@ -205,6 +207,7 @@ namespace CyberWishMachine
             _deitiesFolder = Path.Combine(_resourcesFolder, "Deities");
             _offeringsFolder = Path.Combine(_resourcesFolder, "Offerings");
             _backgroundFolder = Path.Combine(_resourcesFolder, "background");
+            _oldBackgroundFolder = Path.Combine(_resourcesFolder, "OldBackground");
             _logFolder = Path.Combine(_resourcesFolder, "logs");
 
             _pbOfferingSlots = new PictureBox[3];
@@ -873,12 +876,12 @@ namespace CyberWishMachine
                 string tmp = dest + ".tmp";
                 File.Copy(sourceFile, tmp, true);
 
-                // 目录里只留这一张，否则按文件名排序时别的图可能排在前面顶掉它
+                // 旧背景图不删除：挪到 Assets\OldBackground\ 留底，需要时还能找回来
+                Directory.CreateDirectory(_oldBackgroundFolder);
                 foreach (string f in Directory.GetFiles(_backgroundFolder))
                 {
-                    // 本次刚写出的临时文件与目标文件都要留着
+                    // 本次刚写出的临时文件要留着
                     if (string.Equals(f, tmp, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (string.Equals(f, dest, StringComparison.OrdinalIgnoreCase)) continue;
 
                     string name = Path.GetFileName(f);
                     if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
@@ -887,9 +890,22 @@ namespace CyberWishMachine
                         continue;
                     }
                     if (!ImageExts.Contains(Path.GetExtension(f).ToLowerInvariant())) continue;
-                    try { File.Delete(f); } catch { }
+
+                    string archive = Path.Combine(
+                        _oldBackgroundFolder,
+                        Path.GetFileNameWithoutExtension(name) + "_" +
+                        DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") +
+                        Path.GetExtension(name));
+                    try { File.Move(f, archive); } catch { }
                 }
-                if (File.Exists(dest)) File.Delete(dest);
+
+                if (File.Exists(dest))
+                {
+                    // 旧图挪不走就别硬替换，免得把原图弄丢
+                    LastBackgroundError = "旧背景文件正被占用，无法替换";
+                    try { File.Delete(tmp); } catch { }
+                    return false;
+                }
                 File.Move(tmp, dest);
 
                 LoadBackground();

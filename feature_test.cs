@@ -422,6 +422,12 @@ static class FeatureTest
             Check("第二次换背景生效", form.BackgroundImage != null && form.BackgroundImage.Width == 120 && form.BackgroundImage.Height == 70,
                 form.BackgroundImage == null ? "(null)" : form.BackgroundImage.Width + "x" + form.BackgroundImage.Height);
 
+            string oldDir = Path.Combine(appDir, "Assets", "OldBackground");
+            string[] archived = Directory.Exists(oldDir) ? GetImageFiles(oldDir) : new string[0];
+            Check("旧背景被留底而不是删除", archived.Length == 1, "留底 " + archived.Length + " 个: " + FileNames(archived));
+            Check("留底文件名带时间戳", archived.Length == 1 && Path.GetFileNameWithoutExtension(archived[0]).StartsWith("background_"),
+                FileNames(archived));
+
             // 选了不存在的文件：应拒绝，且不破坏当前背景
             bool okBad = form.SetBackgroundFromFile(Path.Combine(appDir, "_not_exists.png"));
             string[] files3 = GetImageFiles(bgDir);
