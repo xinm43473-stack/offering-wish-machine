@@ -384,7 +384,7 @@ static class FeatureTest
         }
 
         Console.WriteLine();
-        Console.WriteLine("--- 右键更换背景图片 ---");
+        Console.WriteLine("--- 背景图库：多张共存与选择切换 ---");
         {
             string bgDir = Path.Combine(appDir, "Assets", "background");
             string src1 = Path.Combine(appDir, "_bg_src1.png");
@@ -404,35 +404,40 @@ static class FeatureTest
                 bmp.Save(src2, System.Drawing.Imaging.ImageFormat.Png);
             }
 
+            int beforeCount = GetImageFiles(bgDir).Length;
+
             bool ok1 = form.SetBackgroundFromFile(src1);
             Application.DoEvents();
             string[] files1 = GetImageFiles(bgDir);
-            Check("换背景返回成功", ok1,
-                "err=" + (Form1.LastBackgroundError ?? "(无)") + " src存在=" + File.Exists(src1) +
-                " 大小=" + (File.Exists(src1) ? new FileInfo(src1).Length.ToString() : "0"));
-            Check("背景目录只剩一张图", files1.Length == 1, "共 " + files1.Length + " 个: " + FileNames(files1));
-            Check("背景文件名为 background.png", files1.Length == 1 && Path.GetFileName(files1[0]) == "background.png", FileNames(files1));
-            Check("窗体背景换成新图", form.BackgroundImage != null && form.BackgroundImage.Width == 80 && form.BackgroundImage.Height == 50,
+            Check("加入新背景成功", ok1, "err=" + (Form1.LastBackgroundError ?? "(无)"));
+            Check("图库只增不减", files1.Length == beforeCount + 1, "之前 " + beforeCount + " 现在 " + files1.Length + ": " + FileNames(files1));
+            Check("新图按原名入库", Array.Exists(files1, f => string.Equals(Path.GetFileName(f), "_bg_src1.png", StringComparison.OrdinalIgnoreCase)), FileNames(files1));
+            Check("背景立即换成新图", form.BackgroundImage != null && form.BackgroundImage.Width == 80 && form.BackgroundImage.Height == 50,
                 form.BackgroundImage == null ? "(null)" : form.BackgroundImage.Width + "x" + form.BackgroundImage.Height);
 
             bool ok2 = form.SetBackgroundFromFile(src2);
             Application.DoEvents();
             string[] files2 = GetImageFiles(bgDir);
-            Check("第二次换背景仍然只剩一张", ok2 && files2.Length == 1, "共 " + files2.Length + " 个: " + FileNames(files2));
-            Check("第二次换背景生效", form.BackgroundImage != null && form.BackgroundImage.Width == 120 && form.BackgroundImage.Height == 70,
+            Check("再加一张仍然保留旧图", ok2 && files2.Length == beforeCount + 2, "共 " + files2.Length + " 个: " + FileNames(files2));
+
+            bool okPick = form.SetBackgroundByName("_bg_src1.png");
+            Application.DoEvents();
+            Check("从图库切回第一张", okPick && form.BackgroundImage != null && form.BackgroundImage.Width == 80,
                 form.BackgroundImage == null ? "(null)" : form.BackgroundImage.Width + "x" + form.BackgroundImage.Height);
+            Check("图库切换不删图", GetImageFiles(bgDir).Length == beforeCount + 2, "共 " + GetImageFiles(bgDir).Length + " 个");
 
-            string oldDir = Path.Combine(appDir, "Assets", "OldBackground");
-            string[] archived = Directory.Exists(oldDir) ? GetImageFiles(oldDir) : new string[0];
-            Check("旧背景被留底而不是删除", archived.Length == 1, "留底 " + archived.Length + " 个: " + FileNames(archived));
-            Check("留底文件名带时间戳", archived.Length == 1 && Path.GetFileNameWithoutExtension(archived[0]).StartsWith("background_"),
-                FileNames(archived));
+            string settingsFile = Path.Combine(appDir, "Assets", "ui.ini");
+            Check("背景选择写进 ui.ini",
+                File.Exists(settingsFile) && File.ReadAllText(settingsFile).Contains("background=_bg_src1.png"),
+                File.Exists(settingsFile) ? File.ReadAllText(settingsFile).Replace("\r", "").Replace("\n", " | ") : "(文件不存在)");
 
-            // 选了不存在的文件：应拒绝，且不破坏当前背景
             bool okBad = form.SetBackgroundFromFile(Path.Combine(appDir, "_not_exists.png"));
+            Check("无效路径被拒绝", !okBad, "ok=" + okBad);
+
+            form.SetBackgroundFromFile(src1);
+            Application.DoEvents();
             string[] files3 = GetImageFiles(bgDir);
-            Check("无效路径被拒绝", !okBad && files3.Length == 1 && form.BackgroundImage != null,
-                "ok=" + okBad + " 共 " + files3.Length + " 个");
+            Check("重名自动加序号不覆盖", Array.Exists(files3, f => string.Equals(Path.GetFileName(f), "_bg_src1 (2).png", StringComparison.OrdinalIgnoreCase)), FileNames(files3));
 
             // 删掉背景图后重载：回白底
             foreach (string f in Directory.GetFiles(bgDir)) File.Delete(f);

@@ -38,8 +38,8 @@ namespace CyberWishMachine
         private readonly string _offeringsFolder;
 
         private readonly string _backgroundFolder;
-        // 换下来的旧背景图挪到这里留底，不做删除
-        private readonly string _oldBackgroundFolder;
+        // 当前选中的背景文件名（Assets\background\ 下），为空时用目录里排序第一张
+        private string _currentBackground;
 
         // 上贡日志
         private readonly string _logFolder;
@@ -207,7 +207,6 @@ namespace CyberWishMachine
             _deitiesFolder = Path.Combine(_resourcesFolder, "Deities");
             _offeringsFolder = Path.Combine(_resourcesFolder, "Offerings");
             _backgroundFolder = Path.Combine(_resourcesFolder, "background");
-            _oldBackgroundFolder = Path.Combine(_resourcesFolder, "OldBackground");
             _logFolder = Path.Combine(_resourcesFolder, "logs");
 
             _pbOfferingSlots = new PictureBox[3];
@@ -787,13 +786,10 @@ namespace CyberWishMachine
             {
                 if (Directory.Exists(_backgroundFolder))
                 {
-                    var bgFiles = Directory.GetFiles(_backgroundFolder)
-                        .Where(f => ImageExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                        .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
-                    if (bgFiles.Length > 0)
+                    string chosen = ResolveBackgroundPath();
+                    if (chosen != null)
                     {
-                        SetBackgroundImage(LoadImageUnlocked(bgFiles[0]));
+                        SetBackgroundImage(LoadImageUnlocked(chosen));
                         this.BackgroundImageLayout = ImageLayout.Stretch;
                         return;
                     }
@@ -804,6 +800,44 @@ namespace CyberWishMachine
             // Default: white background
             this.BackColor = Color.White;
             SetBackgroundImage(null);
+        }
+
+        // 图库：Assets\background\ 下的所有可用图片（按文件名排序）
+        private string[] GetBackgroundFiles()
+        {
+            if (!Directory.Exists(_backgroundFolder)) return new string[0];
+            return Directory.GetFiles(_backgroundFolder)
+                .Where(f => ImageExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        // 当前背景：优先用设置里记下的那张；文件没了就退回排序第一张
+        private string ResolveBackgroundPath()
+        {
+            string[] files = GetBackgroundFiles();
+            if (files.Length == 0)
+            {
+                _currentBackground = null;
+                return null;
+            }
+
+            if (!string.IsNullOrEmpty(_currentBackground))
+            {
+                foreach (string f in files)
+                {
+                    if (string.Equals(Path.GetFileName(f), _currentBackground, StringComparison.OrdinalIgnoreCase))
+                        return f;
+                }
+            }
+
+            string first = Path.GetFileName(files[0]);
+            if (!string.Equals(first, _currentBackground, StringComparison.OrdinalIgnoreCase))
+            {
+                _currentBackground = first;
+                SaveSettings();
+            }
+            return files[0];
         }
 
         // 换背景时释放旧图，避免 GDI 句柄越积越多
@@ -824,10 +858,44 @@ namespace CyberWishMachine
         private ContextMenuStrip BuildBackgroundMenu()
         {
             var menu = new ContextMenuStrip();
-            var item = new ToolStripMenuItem(T("更换背景图片…", "Change background image…"));
-            item.Click += (s, e) => PromptChangeBackground();
-            menu.Items.Add(item);
+
+            var change = new ToolStripMenuItem(T("添加背景图片…", "Add background image…"));
+            change.Click += (s, e) => PromptChangeBackground();
+            menu.Items.Add(change);
+
+            // 图库列表：点哪张就换哪张，不删除任何文件
+            ResolveBackgroundPath();
+            string[] files = GetBackgroundFiles();
+            if (files.Length > 0)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                foreach (string f in files)
+                {
+                    string name = Path.GetFileName(f);
+                    var item = new ToolStripMenuItem(name);
+                    item.Checked = string.Equals(name, _currentBackground, StringComparison.OrdinalIgnoreCase);
+                    item.Click += (s, e) => SetBackgroundByName(name);
+                    menu.Items.Add(item);
+                }
+            }
             return menu;
+        }
+
+        // 从图库里挑一张当背景（只记选择，不删除、不移动任何文件）
+        internal bool SetBackgroundByName(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName)) return false;
+            string full = Path.Combine(_backgroundFolder, fileName);
+            if (!File.Exists(full)) { LastBackgroundError = "背景图片不存在: " + fileName; return false; }
+
+            Image probe = LoadImageUnlocked(full);
+            if (probe == null) { LastBackgroundError = "图片无法解码: " + fileName; return false; }
+            probe.Dispose();
+
+            _currentBackground = Path.GetFileName(full);
+            SaveSettings();
+            LoadBackground();
+            return true;
         }
 
         private void PromptChangeBackground()
@@ -841,7 +909,7 @@ namespace CyberWishMachine
             }
         }
 
-        // 把选中的图片复制进 Assets\background\ 并立即生效（旧背景图会被替换掉）
+        // 把选中的图片复制进 Assets\background\ 图库并设为当前背景（不删除、不移动任何已有图片）
         // 最近一次失败的原因，供自检脚本判断（界面上面向用户的仍是弹窗提示）
         internal static string LastBackgroundError;
         // 自检脚本里置 true，失败时只记录不弹窗（否则无人值守会卡在模态对话框上）
@@ -872,42 +940,21 @@ namespace CyberWishMachine
 
                 Directory.CreateDirectory(_backgroundFolder);
 
-                string dest = Path.Combine(_backgroundFolder, "background" + ext);
-                string tmp = dest + ".tmp";
-                File.Copy(sourceFile, tmp, true);
+                // 复制进图库，文件名沿用原图名；重名时加序号，绝不覆盖已有图片
+                string baseName = Path.GetFileNameWithoutExtension(sourceFile);
+                if (string.IsNullOrEmpty(baseName)) baseName = "background";
+                foreach (char c in Path.GetInvalidFileNameChars()) baseName = baseName.Replace(c, '_');
 
-                // 旧背景图不删除：挪到 Assets\OldBackground\ 留底，需要时还能找回来
-                Directory.CreateDirectory(_oldBackgroundFolder);
-                foreach (string f in Directory.GetFiles(_backgroundFolder))
-                {
-                    // 本次刚写出的临时文件要留着
-                    if (string.Equals(f, tmp, StringComparison.OrdinalIgnoreCase)) continue;
+                string candidate = baseName + ext;
+                int n = 2;
+                while (File.Exists(Path.Combine(_backgroundFolder, candidate)))
+                    candidate = baseName + " (" + n++ + ")" + ext;
 
-                    string name = Path.GetFileName(f);
-                    if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try { File.Delete(f); } catch { }
-                        continue;
-                    }
-                    if (!ImageExts.Contains(Path.GetExtension(f).ToLowerInvariant())) continue;
+                string dest = Path.Combine(_backgroundFolder, candidate);
+                File.Copy(sourceFile, dest, false);
 
-                    string archive = Path.Combine(
-                        _oldBackgroundFolder,
-                        Path.GetFileNameWithoutExtension(name) + "_" +
-                        DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") +
-                        Path.GetExtension(name));
-                    try { File.Move(f, archive); } catch { }
-                }
-
-                if (File.Exists(dest))
-                {
-                    // 旧图挪不走就别硬替换，免得把原图弄丢
-                    LastBackgroundError = "旧背景文件正被占用，无法替换";
-                    try { File.Delete(tmp); } catch { }
-                    return false;
-                }
-                File.Move(tmp, dest);
-
+                _currentBackground = Path.GetFileName(dest);
+                SaveSettings();
                 LoadBackground();
                 return true;
             }
@@ -2048,6 +2095,10 @@ namespace CyberWishMachine
                         if (int.TryParse(val, out v) && v != 0)
                             _autoIncenseHotkey = (Keys)v;
                     }
+                    else if (string.Equals(key, "background", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _currentBackground = string.IsNullOrEmpty(val) ? null : val;
+                    }
                 }
             }
             catch
@@ -2068,6 +2119,7 @@ namespace CyberWishMachine
                 sb.AppendLine("speed=" + _autoIncenseSpeed);
                 sb.AppendLine("hotkey=" + (int)_autoIncenseHotkey);
                 sb.AppendLine("language=" + _languageMode);
+                sb.AppendLine("background=" + (_currentBackground ?? ""));
                 File.WriteAllText(SettingsFile, sb.ToString(), new UTF8Encoding(false));
             }
             catch
