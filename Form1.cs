@@ -13,6 +13,17 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
+// exe 的版本信息：资源管理器「属性 - 详细信息」里看到的程序名称、公司、版本、版权。
+// 这些字段是编译时写进 exe 的 PE 资源，资源管理器只读展示，改不了；要改只能改这里重新打包。
+[assembly: AssemblyTitle("上贡许愿机")]
+[assembly: AssemblyDescription("给受供者上贡的桌面许愿机 / Offering Wish Machine")]
+[assembly: AssemblyProduct("上贡许愿机 / Offering Wish Machine")]
+[assembly: AssemblyCompany("saiboshanggong")]
+[assembly: AssemblyCopyright("Copyright © 2026 saiboshanggong")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyInformationalVersion("1.0.0")]
+
 namespace CyberWishMachine
 {
     static class Program
