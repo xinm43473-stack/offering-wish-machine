@@ -4,6 +4,8 @@
 
 # Offering Wish Machine
 
+**English** | [简体中文](./README.zh-CN.md)
+
 A small Windows desktop widget: pick a deity, hit "Offer", and merit text floats up the screen.
 
 ## Features

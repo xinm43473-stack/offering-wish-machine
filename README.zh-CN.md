@@ -4,6 +4,8 @@
   <img src="./images/ico.png" alt="图标" width="50%">
 </p>
 
+[English](./README.md) | **简体中文**
+
 一个 Windows 桌面小工具：选中受供者，点「上贡」，屏幕上飘出功德文字。
 
 ## 功能
