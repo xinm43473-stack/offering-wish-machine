@@ -41,6 +41,11 @@ static class FeatureTest
         return string.Join(",", parts.ToArray());
     }
 
+    static bool IsNear(System.Drawing.Color a, System.Drawing.Color b)
+    {
+        return Math.Abs(a.R - b.R) < 40 && Math.Abs(a.G - b.G) < 40 && Math.Abs(a.B - b.B) < 40;
+    }
+
     static object Get(Form1 f, string field)
     {
         return typeof(Form1).GetField(field, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
@@ -534,6 +539,228 @@ static class FeatureTest
 
             form.ClientSize = new System.Drawing.Size(700, 480);
             resize2.Invoke(form, new object[] { form, EventArgs.Empty });
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("--- 拖入生成受供者 / 右键飘字文件夹 ---");
+        {
+            var avatar = (System.Windows.Forms.PictureBox)Get(form, "_pbDeity");
+            Check("头像区接受拖放", avatar != null && avatar.AllowDrop,
+                "AllowDrop=" + (avatar != null && avatar.AllowDrop));
+
+            string deitiesDir = Path.Combine(appDir, "Assets", "Deities");
+
+            // 一张 64x48 的临时图片：拖入后应原样复制，不走图标提取
+            string srcImg = Path.Combine(appDir, "_drop_source.png");
+            using (var bmp = new System.Drawing.Bitmap(64, 48))
+            using (var g = System.Drawing.Graphics.FromImage(bmp))
+            {
+                g.Clear(System.Drawing.Color.CornflowerBlue);
+                bmp.Save(srcImg, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            int created = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { srcImg } });
+            string imgDir = Path.Combine(deitiesDir, "_drop_source");
+            Check("拖入图片生成一个受供者", created == 1 && Directory.Exists(imgDir),
+                "created=" + created + " dir=" + imgDir);
+            Check("受供者名取文件名去扩展名", Path.GetFileName(imgDir) == "_drop_source",
+                Path.GetFileName(imgDir));
+            Check("图片原样复制为形象", File.Exists(Path.Combine(imgDir, "_drop_source.png")), "");
+            Check("默认飘字是「这次一定过」",
+                File.Exists(Path.Combine(imgDir, "1.txt"))
+                && File.ReadAllText(Path.Combine(imgDir, "1.txt")) == "这次一定过", "");
+
+            // 文件夹：没有原图可复制，必须取 shell 图标
+            string folder = Path.Combine(appDir, "_drop_folder");
+            Directory.CreateDirectory(folder);
+            int createdDir = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { folder } });
+            string folderDir = Path.Combine(deitiesDir, "_drop_folder");
+            Check("拖入文件夹生成一个受供者", createdDir == 1 && Directory.Exists(folderDir),
+                "created=" + createdDir);
+            Check("文件夹受供者有图标形象", File.Exists(Path.Combine(folderDir, "_drop_folder.png")), "");
+
+            // 拖入后自动选中该受供者
+            var list = Get(form, "_lstDeities");
+            object selected = list.GetType()
+                .GetProperty("SelectedItem", BindingFlags.Public | BindingFlags.Instance)
+                .GetValue(list, null);
+            Check("拖入后选中该受供者", selected != null && selected.ToString() == "_drop_folder",
+                selected == null ? "null" : selected.ToString());
+
+            // exe：取真实程序图标，而不是按扩展名给的通用图标
+            string exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+            if (File.Exists(exe))
+            {
+                int createdExe = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { exe } });
+                string exeDir = Path.Combine(deitiesDir, "explorer");
+                string exePng = Path.Combine(exeDir, "explorer.png");
+                Check("拖入 exe 生成一个受供者", createdExe == 1 && Directory.Exists(exeDir),
+                    "created=" + createdExe);
+                bool iconOk = false;
+                if (File.Exists(exePng))
+                {
+                    using (var im = System.Drawing.Image.FromFile(exePng))
+                        iconOk = im.Width >= 32 && im.Height >= 32;
+                }
+                Check("exe 形象是真实图标（≥32px）", iconOk, exePng);
+            }
+
+            // 同名再拖一次：不覆盖、不重复、不生成 (2)
+            int again = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { srcImg } });
+            bool hasDup = false;
+            foreach (string d in Directory.GetDirectories(deitiesDir))
+                if (Path.GetFileName(d) == "_drop_source (2)") hasDup = true;
+            Check("同名受供者不重复创建", again == 0 && !hasDup, "created=" + again + " dup=" + hasDup);
+            Check("同名时保留原默认飘字",
+                File.ReadAllText(Path.Combine(imgDir, "1.txt")) == "这次一定过", "");
+
+            // 右键头像的菜单：一项，且当前有选中受供者时可用
+            var deityMenu = (System.Windows.Forms.ContextMenuStrip)Call(form, "BuildDeityMenu");
+            Check("右键头像只有一项菜单", deityMenu.Items.Count == 1, "count=" + deityMenu.Items.Count);
+            bool textOk = deityMenu.Items.Count == 1
+                && deityMenu.Items[0].Text.IndexOf("飘字", StringComparison.Ordinal) >= 0;
+            Check("菜单项是编辑飘字", textOk, deityMenu.Items.Count == 1 ? deityMenu.Items[0].Text : "");
+            Check("有选中受供者时菜单可用", deityMenu.Items.Count == 1 && deityMenu.Items[0].Enabled, "");
+
+            // 空白名快捷方式：名字整串是不可见字符（UWP/封装工具生成的 .lnk 很常见），
+            // Trim 后为空，WScript 的 TargetPath 也是空，要靠 shell 的
+            // System.Link.TargetParsingPath 解出目标，用目标文件名兜底命名
+            string notepad = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "notepad.exe");
+            string blankLnk = Path.Combine(appDir, "\u00A0\u00A0\u00A0.lnk");
+            string srcLnk = Path.Combine(appDir, "_blank_src.lnk");
+            bool madeLnk = false;
+            if (File.Exists(notepad))
+            {
+                try
+                {
+                    Type wshType = Type.GetTypeFromProgID("WScript.Shell");
+                    if (wshType != null)
+                    {
+                        object wsh = Activator.CreateInstance(wshType);
+                        // WScript 直接保存成整串 U+00A0 的文件名会失败，先存正常名再改名
+                        object sc = wshType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, wsh, new object[] { srcLnk });
+                        sc.GetType().InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { notepad });
+                        sc.GetType().InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+                        if (File.Exists(srcLnk))
+                        {
+                            File.Move(srcLnk, blankLnk);
+                            madeLnk = File.Exists(blankLnk);
+                        }
+                    }
+                }
+                catch { madeLnk = false; }
+            }
+
+            if (madeLnk)
+            {
+                int createdBlank = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { blankLnk } });
+                string blankDir = Path.Combine(deitiesDir, "notepad");
+                Check("空白名快捷方式也能生成受供者", createdBlank == 1 && Directory.Exists(blankDir),
+                    "created=" + createdBlank + " 期望目录=notepad");
+                Check("空白名快捷方式用目标文件名兜底命名",
+                    File.Exists(Path.Combine(blankDir, "notepad.png")), blankDir);
+                int againBlank = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { blankLnk } });
+                bool dupBlank = false;
+                foreach (string d in Directory.GetDirectories(deitiesDir))
+                    if (Path.GetFileName(d) == "notepad (2)") dupBlank = true;
+                Check("空白名快捷方式同名时不重复创建", againBlank == 0 && !dupBlank, "created=" + againBlank);
+            }
+            else
+            {
+                Check("空白名快捷方式测试环境可用", false, "无法创建测试用 .lnk");
+            }
+
+            // 文件夹缩略图兜底：shell 缩略图缓存还没生成时只会给一张空文件夹图标，
+            // 这时要用文件夹里的图片自己拼（1 张铺满 / 2 张左右 / 3 张左大右二 / 4 张 2x2）
+            string previewDir = Path.Combine(appDir, "_preview_src");
+            Directory.CreateDirectory(previewDir);
+            System.Drawing.Color[] quad = {
+                System.Drawing.Color.FromArgb(255, 220, 30, 40),
+                System.Drawing.Color.FromArgb(255, 30, 60, 220),
+                System.Drawing.Color.FromArgb(255, 40, 200, 80),
+                System.Drawing.Color.FromArgb(255, 240, 210, 40) };
+            for (int qi = 0; qi < quad.Length; qi++)
+            {
+                using (var bmp = new System.Drawing.Bitmap(80, 80))
+                {
+                    using (var g = System.Drawing.Graphics.FromImage(bmp)) g.Clear(quad[qi]);
+                    bmp.Save(Path.Combine(previewDir, "q" + qi + ".png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+            }
+
+            Type previewType = typeof(Form1).GetNestedType("FolderPreview", BindingFlags.NonPublic);
+            Check("FolderPreview 类型存在", previewType != null, previewType == null ? "null" : "ok");
+            if (previewType != null)
+            {
+                MethodInfo buildPrev = previewType.GetMethod("Build", BindingFlags.Static | BindingFlags.NonPublic);
+                using (var prev = (System.Drawing.Bitmap)buildPrev.Invoke(null, new object[] { previewDir, 256 }))
+                {
+                    Check("四张图片拼成 256x256", prev != null && prev.Width == 256 && prev.Height == 256,
+                        prev == null ? "null" : prev.Width + "x" + prev.Height);
+                    if (prev != null)
+                    {
+                        bool q0 = IsNear(prev.GetPixel(50, 50), quad[0]);
+                        bool q1 = IsNear(prev.GetPixel(200, 50), quad[1]);
+                        bool q2 = IsNear(prev.GetPixel(50, 200), quad[2]);
+                        bool q3 = IsNear(prev.GetPixel(200, 200), quad[3]);
+                        Check("四格按 2x2 排布", q0 && q1 && q2 && q3, "q=" + q0 + q1 + q2 + q3);
+                    }
+                }
+
+                // 单张图片铺满整张缩略图
+                string oneDir = Path.Combine(appDir, "_preview_one");
+                Directory.CreateDirectory(oneDir);
+                using (var bmp = new System.Drawing.Bitmap(120, 60))
+                {
+                    using (var g = System.Drawing.Graphics.FromImage(bmp)) g.Clear(quad[2]);
+                    bmp.Save(Path.Combine(oneDir, "only.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+                using (var prevOne = (System.Drawing.Bitmap)buildPrev.Invoke(null, new object[] { oneDir, 256 }))
+                {
+                    bool okOne = prevOne != null && prevOne.Width == 256
+                        && IsNear(prevOne.GetPixel(128, 128), quad[2])
+                        && IsNear(prevOne.GetPixel(8, 8), quad[2]);
+                    Check("单张图片铺满缩略图", okOne, prevOne == null ? "null" : "ok");
+                }
+
+                // 空文件夹：shell 图标自身应被判成「纯图标」；自己拼的图不能误判
+                string emptyDir = Path.Combine(appDir, "_preview_empty");
+                Directory.CreateDirectory(emptyDir);
+                Type iconExtractor = typeof(Form1).GetNestedType("ShellIconExtractor", BindingFlags.NonPublic);
+                MethodInfo extractIcon = iconExtractor.GetMethod("Extract", BindingFlags.Static | BindingFlags.NonPublic);
+                MethodInfo isPlain = previewType.GetMethod("IsPlainFolderIcon", BindingFlags.Static | BindingFlags.NonPublic);
+                using (var folderIcon = (System.Drawing.Bitmap)extractIcon.Invoke(null, new object[] { emptyDir }))
+                {
+                    Check("能取到空文件夹图标", folderIcon != null,
+                        folderIcon == null ? "null" : folderIcon.Width + "x" + folderIcon.Height);
+                    if (folderIcon != null)
+                    {
+                        bool plain = (bool)isPlain.Invoke(null, new object[] { folderIcon, emptyDir });
+                        Check("空文件夹图标被判为纯图标", plain, "");
+                    }
+                }
+                using (var prev = (System.Drawing.Bitmap)buildPrev.Invoke(null, new object[] { previewDir, 256 }))
+                {
+                    if (prev != null)
+                    {
+                        bool plainCollage = (bool)isPlain.Invoke(null, new object[] { prev, previewDir });
+                        Check("自拼拼贴不被误判为纯图标", !plainCollage, "");
+                    }
+                }
+            }
+
+            // 真正走一遍拖入：文件夹头像必须是完整图片，不能是空壳
+            int createdPreview = (int)Call(form, "ImportDeitiesFromPaths", new object[] { new string[] { previewDir } });
+            string previewDeity = Path.Combine(deitiesDir, "_preview_src");
+            string previewPng = Path.Combine(previewDeity, "_preview_src.png");
+            bool previewOk = false;
+            if (File.Exists(previewPng))
+            {
+                using (var im = System.Drawing.Image.FromFile(previewPng))
+                    previewOk = im.Width == 256 && im.Height == 256;
+            }
+            Check("拖入文件夹生成 256x256 形象", createdPreview == 1 && previewOk,
+                "created=" + createdPreview + " png=" + File.Exists(previewPng));
         }
 
         form.Close();

@@ -25,6 +25,26 @@ A small Windows desktop widget: pick a deity, hit "Offer", and merit text floats
 <p align="center">
   <img src="./images/bf61e7b6-3dca-4baa-ae22-c1c39a620a15.png" alt="Screenshot" width="50%">
 </p>
+- **Drag & drop**: drop a file, folder or shortcut onto the avatar in the middle to create a deity, see "Drag to create a deity" below
+
+## Drag to create a deity
+
+Drop a file, a folder or a shortcut onto the avatar in the middle and it becomes a deity that looks exactly like it does in Explorer; the name defaults to the file name:
+
+- **Image files**: copied as-is, no preset icon
+- **Programs / shortcuts**: use the icon Explorer shows; a shortcut uses its own icon first (an Edge web-app shortcut shows the site icon instead of the Edge icon)
+- **Folders**: use Explorer's thumbnail; when the system has not cached one yet, the first 4 images inside are tiled into one (1 fills / 2 side by side / 3 left big + two right / 4 in a 2×2 grid)
+- **Default floating text**: always "This time for sure" (only for drag & drop; the "New deity" button keeps the regular defaults)
+- **Right-click the avatar**: "Edit floating texts (open folder)" opens `Assets/Deities/<name>/` directly; changes show up within 300 ms
+- **No duplicates**: an existing deity with the same name is only selected, never overwritten and never renamed to "name (2)"
+
+<p align="center">
+  <img src="./images/drag-drop-folder.png" alt="Dropping the deepsleep folder onto the avatar to create a deity" width="49%">
+  <img src="./images/drag-drop-shortcut.png" alt="Dropping a Visual Studio Code shortcut onto the avatar to create a deity" width="49%">
+</p>
+<p align="center">
+  <img src="./images/drag-drop-popping-text.png" alt="The default floating text showing after an offering" width="70%">
+</p>
 
 ## Run
 

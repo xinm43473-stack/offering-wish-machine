@@ -338,6 +338,12 @@ namespace CyberWishMachine
                 BackColor = Color.Transparent
             };
 
+            // 把文件/文件夹/快捷方式拖进来就生成受供者；右键头像打开它的飘字文件夹
+            _pbDeity.AllowDrop = true;
+            _pbDeity.DragEnter += PbDeity_DragEnter;
+            _pbDeity.DragDrop += PbDeity_DragDrop;
+            _pbDeity.MouseDown += PbDeity_MouseDown;
+
             // Title textbox (below image)
             _txtDeityTitle = new FlatTextBox
             {
@@ -1281,6 +1287,751 @@ namespace CyberWishMachine
             catch
             {
                 return null;
+            }
+        }
+
+        // ================================================================
+        //  Drag & drop - 拖入文件/文件夹/快捷方式生成受供者
+        // ================================================================
+
+        // 拖入生成时的默认飘字。属于素材数据，不随界面语言翻译。
+        internal const string DraggedDeityDefaultText = "这次一定过";
+
+        private void PbDeity_DragEnter(object sender, DragEventArgs e)
+        {
+            e.Effect = e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+        }
+
+        private void PbDeity_DragDrop(object sender, DragEventArgs e)
+        {
+            if (e.Data == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (paths == null || paths.Length == 0) return;
+            ImportDeitiesFromPaths(paths);
+        }
+
+        // 把一批路径各自变成一个受供者，返回真正新建的数量。
+        // 同名受供者已存在时只选中它：不覆盖、不生成「(2)」。
+        internal int ImportDeitiesFromPaths(string[] paths)
+        {
+            if (paths == null || paths.Length == 0) return 0;
+
+            int created = 0;
+            string last = null;
+
+            foreach (string raw in paths)
+            {
+                if (string.IsNullOrEmpty(raw)) continue;
+
+                string path = raw;
+                try { path = Path.GetFullPath(raw); } catch { }
+
+                string name = SuggestDeityName(path);
+                if (string.IsNullOrEmpty(name)) name = UniqueFallbackDeityName();
+
+                string dir = DeityFolder(_deitiesFolder, name);
+                if (Directory.Exists(dir) || FindDeityImage(name) != null)
+                {
+                    last = name;   // 已经有了：选中它，不覆盖
+                    continue;
+                }
+
+                bool madeDir = false;
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    madeDir = true;
+
+                    if (!TrySaveDraggedImage(path, dir, name))
+                    {
+                        // 不是图片（或图片坏了）：取它在资源管理器里显示的样子。
+                        // 文件夹在资源管理器里显示的是里面图片拼成的缩略图，不是黄色图标；
+                        // 快捷方式先取 .lnk 自身的图标（shell 会用它自定义的 IconLocation，
+                        // 例如 Edge 的 PWA 快捷方式指向 msedge_proxy.exe，但显示的是站点图标），
+                        // 取不到才回退到目标文件的图标。
+                        Bitmap icon = null;
+                        if (Directory.Exists(path))
+                        {
+                            icon = ShellThumbnailExtractor.Extract(path);
+                            // 缩略图缓存里还没有这张图时，shell 只给一个空文件夹图标；
+                            // 改用文件夹里的图片自己拼一张，头像才看得出里面有什么
+                            if (icon == null || FolderPreview.IsPlainFolderIcon(icon, path))
+                            {
+                                if (icon != null) icon.Dispose();
+                                icon = FolderPreview.Build(path, 256);
+                            }
+                        }
+                        if (icon == null) icon = ShellIconExtractor.Extract(path);
+                        if (icon == null)
+                        {
+                            string iconTarget = ResolveShortcutTarget(path);
+                            if (iconTarget != null) icon = ShellIconExtractor.Extract(iconTarget);
+                        }
+                        using (icon)
+                        {
+                            if (icon == null) throw new InvalidOperationException("无法提取图标");
+                            icon.Save(Path.Combine(dir, name + ".png"), ImageFormat.Png);
+                        }
+                    }
+
+                    SetTitle(name, "");
+                    File.WriteAllText(Path.Combine(dir, "1.txt"), DraggedDeityDefaultText);
+                    created++;
+                    last = name;
+                }
+                catch
+                {
+                    // 失败就清掉半成品文件夹，别留下无法显示的空受供者
+                    if (madeDir) { try { Directory.Delete(dir, true); } catch { } }
+                }
+            }
+
+            if (last != null)
+            {
+                LoadDeities();
+                int idx = _lstDeities.Items.IndexOf(last);
+                if (idx >= 0) _lstDeities.SelectedIndex = idx;
+            }
+            return created;
+        }
+
+        // 图片文件直接复制原图，保住原有清晰度与格式；返回 false 表示要走图标提取
+        private bool TrySaveDraggedImage(string path, string dir, string name)
+        {
+            if (!File.Exists(path)) return false;
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (!ImageExts.Contains(ext)) return false;
+
+            Image probe = LoadImageUnlocked(path);
+            if (probe == null) return false;
+            probe.Dispose();
+
+            File.Copy(path, Path.Combine(dir, name + ext), false);
+            return true;
+        }
+
+        // 名字取文件/文件夹名去掉扩展名；非法字符换成下划线，过长的截断。
+        // 有些快捷方式名字整串都是不可见字符（UWP/封装工具生成的空白名 .lnk），
+        // Trim 后为空，这时退回它指向的目标文件名，别让拖入静默失败。
+        private static string SuggestDeityName(string path)
+        {
+            string trimmed = path.TrimEnd('\\', '/');
+            string name = Directory.Exists(trimmed)
+                ? Path.GetFileName(trimmed)
+                : Path.GetFileNameWithoutExtension(trimmed);
+            if (string.IsNullOrEmpty(name)) name = Path.GetFileName(trimmed);
+
+            name = CleanDeityName(name);
+            if (string.IsNullOrEmpty(name)) name = CleanDeityName(ShortcutTargetFileName(trimmed));
+            return string.IsNullOrEmpty(name) ? null : name;
+        }
+
+        // 名字里不能出现的字符换成下划线、去掉首尾空白和末尾的点、限制长度
+        private static string CleanDeityName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            name = name.Trim().TrimEnd('.');
+            if (name.Length > 60) name = name.Substring(0, 60);
+            return name;
+        }
+
+        // 空白名 .lnk 的兜底名字：取它真正指向的文件名（如 WeChat.exe → WeChat）
+        private static string ShortcutTargetFileName(string path)
+        {
+            if (!string.Equals(Path.GetExtension(path), ".lnk", StringComparison.OrdinalIgnoreCase)) return null;
+            string target = ReadShortcutTargetParsingPath(path);
+            if (string.IsNullOrEmpty(target)) return null;
+            string name = Path.GetFileNameWithoutExtension(target.TrimEnd('\\', '/'));
+            return string.IsNullOrEmpty(name) ? null : name;
+        }
+
+        // 用 shell 自己的解析结果拿 lnk 目标：WScript.Shell 对这类空白名快捷方式
+        // 的 TargetPath 是空串，但 System.Link.TargetParsingPath 仍能拿到目标。
+        private static string ReadShortcutTargetParsingPath(string path)
+        {
+            object shell = null, ns = null, item = null;
+            try
+            {
+                Type shellType = Type.GetTypeFromProgID("Shell.Application");
+                if (shellType == null) return null;
+
+                shell = Activator.CreateInstance(shellType);
+                ns = shellType.InvokeMember("Namespace", BindingFlags.InvokeMethod, null, shell,
+                    new object[] { Path.GetDirectoryName(path) });
+                if (ns == null) return null;
+
+                item = ns.GetType().InvokeMember("ParseName", BindingFlags.InvokeMethod, null, ns,
+                    new object[] { Path.GetFileName(path) });
+                if (item == null) return null;
+
+                object value = item.GetType().InvokeMember("ExtendedProperty", BindingFlags.InvokeMethod, null, item,
+                    new object[] { "System.Link.TargetParsingPath" });
+                return value as string;
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                ReleaseCom(ns);
+                ReleaseCom(item);
+                ReleaseCom(shell);
+            }
+        }
+
+        private static void ReleaseCom(object o)
+        {
+            if (o == null || !Marshal.IsComObject(o)) return;
+            try { Marshal.ReleaseComObject(o); } catch { }
+        }
+
+        // 连文件名都拿不到时（目标也不可解析）用「快捷方式」「快捷方式 (2)」…
+        // 每个拖入仍然各生成一个受供者，不互相覆盖
+        private string UniqueFallbackDeityName()
+        {
+            string baseName = T("快捷方式", "Shortcut");
+            string candidate = baseName;
+            for (int n = 2; Directory.Exists(DeityFolder(_deitiesFolder, candidate))
+                || FindDeityImage(candidate) != null; n++)
+            {
+                candidate = baseName + " (" + n + ")";
+            }
+            return candidate;
+        }
+
+        // .lnk 指向的目标：拿到目标路径后取目标的图标，避免快捷方式的小箭头
+        private static string ResolveShortcutTarget(string path)
+        {
+            if (!string.Equals(Path.GetExtension(path), ".lnk", StringComparison.OrdinalIgnoreCase)) return null;
+            try
+            {
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null) return null;
+
+                object shell = Activator.CreateInstance(shellType);
+                object shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod,
+                    null, shell, new object[] { path });
+                string target = shortcut.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty,
+                    null, shortcut, null) as string;
+                if (string.IsNullOrEmpty(target)) return null;
+                return File.Exists(target) || Directory.Exists(target) ? target : null;
+            }
+            catch
+            {
+                return null;   // 解析不了就退回快捷方式自身的图标
+            }
+        }
+
+        // 右键头像：打开该受供者的飘字文件夹（*.txt 每个文件一条候选文字）
+        internal ContextMenuStrip BuildDeityMenu()
+        {
+            var menu = new ContextMenuStrip();
+            string name = CurrentDeityName();
+            var edit = new ToolStripMenuItem(T("编辑飘字（打开文件夹）", "Edit popping texts (open folder)"));
+            edit.Enabled = !string.IsNullOrEmpty(name);
+            edit.Click += (s, e) => OpenDeityTextFolder();
+            menu.Items.Add(edit);
+            return menu;
+        }
+
+        private void PbDeity_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || _pbDeity == null) return;
+            BuildDeityMenu().Show(_pbDeity, e.Location);
+        }
+
+        private void OpenDeityTextFolder()
+        {
+            string name = CurrentDeityName();
+            if (string.IsNullOrEmpty(name)) return;
+
+            string dir = DeityFolder(_deitiesFolder, name);
+            if (!Directory.Exists(dir))
+            {
+                MessageBox.Show(string.Format(T("找不到受供者文件夹：{0}", "Deity folder not found: {0}"), dir),
+                    T("提示", "Notice"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                Process.Start("explorer.exe", "\"" + dir + "\"");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(string.Format(T("打开文件夹失败：{0}", "Failed to open folder: {0}"), ex.Message),
+                    T("错误", "Error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // 取 Windows 资源管理器里显示的真实图标（256px 优先，逐级回退）。
+        // 不按扩展名套预设：文件夹、exe、无扩展名文件都交给 shell 决定。
+        private static class ShellIconExtractor
+        {
+            private const uint SHGFI_ICON = 0x000000100;
+            private const uint SHGFI_LARGEICON = 0x000000000;
+            private const uint SHGFI_SYSICONINDEX = 0x000004000;
+            private const int SHIL_EXTRALARGE = 0x2;
+            private const int SHIL_JUMBO = 0x4;
+            private const int ILD_TRANSPARENT = 0x00000001;
+
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            private struct SHFILEINFO
+            {
+                public IntPtr hIcon;
+                public int iIcon;
+                public uint dwAttributes;
+                [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+                public string szDisplayName;
+                [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+                public string szTypeName;
+            }
+
+            [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+            private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes,
+                ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+
+            [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+            private static extern int SHGetImageList(int iImageList, ref Guid riid, out IntPtr ppv);
+
+            [DllImport("user32.dll")]
+            private static extern bool DestroyIcon(IntPtr hIcon);
+
+            // IImageList 的前 7 个方法用不到，但仍要占住 vtable 槽位，GetIcon 才会落在第 8 个
+            [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"),
+             InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+            private interface IImageList
+            {
+                [PreserveSig] int Add(IntPtr hbmImage, IntPtr hbmMask, ref int pi);
+                [PreserveSig] int ReplaceIcon(int i, IntPtr hicon, ref int pi);
+                [PreserveSig] int SetOverlayImage(int iImage, int iOverlay);
+                [PreserveSig] int Replace(int i, IntPtr hbmImage, IntPtr hbmMask);
+                [PreserveSig] int AddMasked(IntPtr hbmImage, int crMask, ref int pi);
+                [PreserveSig] int Draw(IntPtr internal1, int i, IntPtr hdc, int x, int y, int cx, int cy, int x0, int y0, int fStyle);
+                [PreserveSig] int Remove(int i);
+                [PreserveSig] int GetIcon(int i, int flags, out IntPtr picon);
+            }
+
+            // 返回调用方负责 Dispose 的位图；取不到返回 null
+            internal static Bitmap Extract(string path)
+            {
+                if (string.IsNullOrEmpty(path)) return null;
+                Bitmap bmp = FromImageList(path) ?? FromLargeIcon(path) ?? FromAssociatedIcon(path);
+                return NormalizeIcon(bmp);
+            }
+
+            // 没有 256px 资源的旧 exe，shell 会把 32px 图标画在 256 画布的左上角，
+            // 直接存下来头像里就是一块贴边的小图。这里裁掉透明边、等比放大、居中。
+            // 本来就用满画布的图标（内容占比 >= 60%）原样返回。
+            private static Bitmap NormalizeIcon(Bitmap src)
+            {
+                if (src == null) return null;
+                try
+                {
+                    int minX = src.Width, minY = src.Height, maxX = -1, maxY = -1;
+                    for (int y = 0; y < src.Height; y++)
+                    {
+                        for (int x = 0; x < src.Width; x++)
+                        {
+                            if (src.GetPixel(x, y).A <= 8) continue;
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                    if (maxX < 0) { src.Dispose(); return null; }   // 全透明：当没取到
+
+                    int w = maxX - minX + 1;
+                    int h = maxY - minY + 1;
+                    if (w >= src.Width * 0.6 && h >= src.Height * 0.6) return src;
+
+                    var dst = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+                    using (var g = Graphics.FromImage(dst))
+                    {
+                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        g.Clear(Color.Transparent);
+                        float scale = Math.Min((float)src.Width / w, (float)src.Height / h);
+                        int nw = Math.Max(1, (int)Math.Round(w * scale));
+                        int nh = Math.Max(1, (int)Math.Round(h * scale));
+                        g.DrawImage(src, new Rectangle((src.Width - nw) / 2, (src.Height - nh) / 2, nw, nh),
+                            new Rectangle(minX, minY, w, h), GraphicsUnit.Pixel);
+                    }
+                    src.Dispose();
+                    return dst;
+                }
+                catch
+                {
+                    return src;
+                }
+            }
+
+            private static Bitmap FromImageList(string path)
+            {
+                try
+                {
+                    var info = new SHFILEINFO();
+                    uint size = (uint)Marshal.SizeOf(typeof(SHFILEINFO));
+                    if (SHGetFileInfo(path, 0, ref info, size, SHGFI_SYSICONINDEX) == IntPtr.Zero)
+                        return null;
+
+                    Guid iid = typeof(IImageList).GUID;
+                    IntPtr listPtr;
+                    if (SHGetImageList(SHIL_JUMBO, ref iid, out listPtr) != 0 || listPtr == IntPtr.Zero)
+                    {
+                        if (SHGetImageList(SHIL_EXTRALARGE, ref iid, out listPtr) != 0 || listPtr == IntPtr.Zero)
+                            return null;
+                    }
+
+                    var list = (IImageList)Marshal.GetObjectForIUnknown(listPtr);
+                    try
+                    {
+                        IntPtr hIcon;
+                        if (list.GetIcon(info.iIcon, ILD_TRANSPARENT, out hIcon) != 0 || hIcon == IntPtr.Zero)
+                            return null;
+                        try
+                        {
+                            using (var ico = Icon.FromHandle(hIcon))
+                                return ico.ToBitmap();
+                        }
+                        finally { DestroyIcon(hIcon); }
+                    }
+                    finally { Marshal.ReleaseComObject(list); }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            private static Bitmap FromLargeIcon(string path)
+            {
+                try
+                {
+                    var info = new SHFILEINFO();
+                    uint size = (uint)Marshal.SizeOf(typeof(SHFILEINFO));
+                    if (SHGetFileInfo(path, 0, ref info, size, SHGFI_ICON | SHGFI_LARGEICON) == IntPtr.Zero
+                        || info.hIcon == IntPtr.Zero)
+                        return null;
+                    try
+                    {
+                        using (var ico = Icon.FromHandle(info.hIcon))
+                            return ico.ToBitmap();
+                    }
+                    finally { DestroyIcon(info.hIcon); }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            private static Bitmap FromAssociatedIcon(string path)
+            {
+                try
+                {
+                    using (var ico = Icon.ExtractAssociatedIcon(path))
+                        return ico == null ? null : ico.ToBitmap();
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        // ================================================================
+        //  Shell 缩略图（与资源管理器显示一致）
+        //  文件夹在桌面/资源管理器里显示的是里面图片拼成的缩略图，而不是黄色图标；
+        //  这里用 IShellItemImageFactory 取同一张缩略图。没有缩略图时返回 null，
+        //  调用方再回退到普通的 shell 图标。
+        // ================================================================
+        private static class ShellThumbnailExtractor
+        {
+            private const int SIIGBF_BIGGERSIZEOK = 0x01;
+            private const int SIIGBF_THUMBNAILONLY = 0x08;
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct SIZE { public int cx; public int cy; }
+
+            [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"),
+             InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+            private interface IShellItemImageFactory
+            {
+                [PreserveSig] int GetImage(SIZE size, int flags, out IntPtr phbm);
+            }
+
+            [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+            private static extern int SHCreateItemFromParsingName(
+                [MarshalAs(UnmanagedType.LPWStr)] string pszPath, IntPtr pbc,
+                ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppv);
+
+            [DllImport("gdi32.dll")]
+            private static extern int GetObject(IntPtr hgdiobj, int cbBuffer, ref BITMAP lpvObject);
+            [DllImport("gdi32.dll")]
+            private static extern int GetDIBits(IntPtr hdc, IntPtr hbmp, uint uStartScan, uint cScanLines,
+                IntPtr lpvBits, ref BITMAPINFO lpbi, uint uUsage);
+            [DllImport("gdi32.dll")]
+            private static extern bool DeleteObject(IntPtr hObject);
+            [DllImport("gdi32.dll")]
+            private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+            [DllImport("gdi32.dll")]
+            private static extern bool DeleteDC(IntPtr hdc);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct BITMAP
+            {
+                public int bmType, bmWidth, bmHeight, bmWidthBytes;
+                public ushort bmPlanes, bmBitsPixel;
+                public IntPtr bmBits;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct BITMAPINFOHEADER
+            {
+                public int biSize, biWidth, biHeight;
+                public ushort biPlanes, biBitCount;
+                public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct BITMAPINFO
+            {
+                public BITMAPINFOHEADER bmiHeader;
+                public int bmiColors;
+            }
+
+            // 返回调用方负责 Dispose 的位图；没有缩略图返回 null
+            internal static Bitmap Extract(string path)
+            {
+                if (string.IsNullOrEmpty(path)) return null;
+                object factoryObj = null;
+                IntPtr hbmp = IntPtr.Zero;
+                try
+                {
+                    Guid iid = typeof(IShellItemImageFactory).GUID;
+                    if (SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out factoryObj) != 0) return null;
+                    var factory = factoryObj as IShellItemImageFactory;
+                    if (factory == null) return null;
+
+                    int flags = SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK;
+                    if (factory.GetImage(new SIZE { cx = 256, cy = 256 }, flags, out hbmp) != 0) return null;
+                    return hbmp == IntPtr.Zero ? null : FromHBitmap(hbmp);
+                }
+                catch
+                {
+                    return null;
+                }
+                finally
+                {
+                    if (hbmp != IntPtr.Zero) DeleteObject(hbmp);
+                    if (factoryObj != null)
+                    {
+                        try { Marshal.ReleaseComObject(factoryObj); } catch { }
+                    }
+                }
+            }
+
+            // HBITMAP -> 32bpp 位图；缩略图没有 alpha 通道时（全 0）按不透明处理
+            private static Bitmap FromHBitmap(IntPtr hbmp)
+            {
+                var bm = new BITMAP();
+                if (GetObject(hbmp, Marshal.SizeOf(typeof(BITMAP)), ref bm) == 0) return null;
+                int w = Math.Abs(bm.bmWidth);
+                int h = Math.Abs(bm.bmHeight);
+                if (w <= 0 || h <= 0) return null;
+
+                int stride = w * 4;
+                var info = new BITMAPINFO();
+                info.bmiHeader.biSize = Marshal.SizeOf(typeof(BITMAPINFOHEADER));
+                info.bmiHeader.biWidth = w;
+                info.bmiHeader.biHeight = -h;   // 负数表示自上而下
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = 0;
+
+                IntPtr buf = Marshal.AllocHGlobal(stride * h);
+                IntPtr hdc = CreateCompatibleDC(IntPtr.Zero);
+                try
+                {
+                    if (GetDIBits(hdc, hbmp, 0, (uint)h, buf, ref info, 0) == 0) return null;
+
+                    var data = new byte[stride * h];
+                    Marshal.Copy(buf, data, 0, data.Length);
+
+                    bool anyAlpha = false;
+                    for (int i = 3; i < data.Length; i += 4)
+                    {
+                        if (data[i] != 0) { anyAlpha = true; break; }
+                    }
+                    if (!anyAlpha)
+                    {
+                        for (int i = 3; i < data.Length; i += 4) data[i] = 255;
+                    }
+
+                    var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+                    BitmapData bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                    try { Marshal.Copy(data, 0, bd.Scan0, data.Length); }
+                    finally { bmp.UnlockBits(bd); }
+                    return bmp;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buf);
+                    if (hdc != IntPtr.Zero) DeleteDC(hdc);
+                }
+            }
+        }
+
+        // 文件夹里图片拼成的缩略图。shell 的文件夹缩略图缓存还没生成时（刚拖进来的
+        // 新文件夹很常见），IShellItemImageFactory 只会返回一个空文件夹图标；
+        // 这时自己拼一张，格子划分与资源管理器一致：
+        // 1 张铺满、2 张左右平分、3 张左边一张大 + 右边上下两张、4 张 2x2。
+        private static class FolderPreview
+        {
+            internal static Bitmap Build(string folder, int size)
+            {
+                string[] files = PickImages(folder, 4);
+                if (files.Length == 0) return null;
+
+                Rectangle[] rects = Layout(files.Length, size);
+                var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.Clear(Color.White);
+                    for (int i = 0; i < files.Length; i++)
+                    {
+                        using (Image img = LoadImageUnlocked(files[i]))
+                        {
+                            if (img != null) DrawFilled(g, img, rects[i]);
+                        }
+                    }
+                }
+                return bmp;
+            }
+
+            // shell 返回的是不是「空文件夹图标」：和普通图标几乎一模一样，说明缓存里
+            // 没有真正的缩略图，得自己拼
+            internal static bool IsPlainFolderIcon(Bitmap thumb, string path)
+            {
+                Bitmap plain = null;
+                try
+                {
+                    plain = ShellIconExtractor.Extract(path);
+                    if (plain == null || thumb.Width != plain.Width || thumb.Height != plain.Height) return false;
+
+                    int diff = 0, total = 0;
+                    for (int y = 0; y < thumb.Height; y += 8)
+                    {
+                        for (int x = 0; x < thumb.Width; x += 8)
+                        {
+                            Color a = thumb.GetPixel(x, y);
+                            Color b = plain.GetPixel(x, y);
+                            if (Math.Abs(a.A - b.A) + Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B) > 30) diff++;
+                            total++;
+                        }
+                    }
+                    return total > 0 && diff <= total / 100;
+                }
+                catch
+                {
+                    return false;
+                }
+                finally
+                {
+                    if (plain != null) plain.Dispose();
+                }
+            }
+
+            // 文件夹里最多取 4 张图片，按资源管理器一样的自然顺序排
+            private static string[] PickImages(string folder, int max)
+            {
+                var list = new List<string>();
+                try
+                {
+                    foreach (string f in Directory.GetFiles(folder))
+                    {
+                        if (Array.IndexOf(ImageExts, Path.GetExtension(f).ToLowerInvariant()) < 0) continue;
+                        list.Add(f);
+                    }
+                }
+                catch { }
+                list.Sort(NaturalCompare);
+                if (list.Count > max) list.RemoveRange(max, list.Count - max);
+                return list.ToArray();
+            }
+
+            private static int NaturalCompare(string a, string b)
+            {
+                try { return StrCmpLogicalW(Path.GetFileName(a), Path.GetFileName(b)); }
+                catch { return string.Compare(Path.GetFileName(a), Path.GetFileName(b), StringComparison.OrdinalIgnoreCase); }
+            }
+
+            [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+            private static extern int StrCmpLogicalW(string x, string y);
+
+            private static Rectangle[] Layout(int count, int size)
+            {
+                int half = size / 2;
+                Rectangle[] cells;
+                if (count == 1)
+                {
+                    cells = new[] { new Rectangle(0, 0, size, size) };
+                }
+                else if (count == 2)
+                {
+                    cells = new[]
+                    {
+                        new Rectangle(0, 0, half, size),
+                        new Rectangle(half, 0, size - half, size)
+                    };
+                }
+                else if (count == 3)
+                {
+                    cells = new[]
+                    {
+                        new Rectangle(0, 0, half, size),
+                        new Rectangle(half, 0, size - half, half),
+                        new Rectangle(half, half, size - half, size - half)
+                    };
+                }
+                else
+                {
+                    cells = new[]
+                    {
+                        new Rectangle(0, 0, half, half),
+                        new Rectangle(half, 0, size - half, half),
+                        new Rectangle(0, half, half, size - half),
+                        new Rectangle(half, half, size - half, size - half)
+                    };
+                }
+
+                // 拼贴之间留 1px 白缝（单张图不留）
+                if (count == 1) return cells;
+                for (int i = 0; i < cells.Length; i++)
+                    cells[i] = Rectangle.Inflate(cells[i], -1, -1);
+                return cells;
+            }
+
+            // 与资源管理器一致：等比缩放铺满格子，多出来的部分居中裁掉
+            private static void DrawFilled(Graphics g, Image img, Rectangle cell)
+            {
+                if (cell.Width <= 0 || cell.Height <= 0) return;
+                float scale = Math.Max((float)cell.Width / img.Width, (float)cell.Height / img.Height);
+                int w = Math.Max(1, (int)Math.Round(img.Width * scale));
+                int h = Math.Max(1, (int)Math.Round(img.Height * scale));
+                var dest = new Rectangle(cell.X + (cell.Width - w) / 2, cell.Y + (cell.Height - h) / 2, w, h);
+                GraphicsState state = g.Save();
+                g.SetClip(cell);
+                g.DrawImage(img, dest);
+                g.Restore(state);
             }
         }
 
